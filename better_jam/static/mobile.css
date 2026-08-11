@@ -1,0 +1,47 @@
+.playlist-toggle {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  .topbar {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .playlist-toggle {
+    display: block;
+    align-self: flex-end;
+    padding: 9px 14px;
+    border: 1px solid #555;
+    border-radius: 999px;
+    background: #242424;
+    color: #fff;
+    cursor: pointer;
+  }
+
+  .search-wrap {
+    width: 100%;
+  }
+
+  .search-drop {
+    top: 108px;
+  }
+
+  .now-panel {
+    order: 1;
+  }
+
+  .playlist-panel {
+    display: none;
+    order: 2;
+  }
+
+  body.playlist-open .now-panel {
+    display: none;
+  }
+
+  body.playlist-open .playlist-panel {
+    display: block;
+  }
+}

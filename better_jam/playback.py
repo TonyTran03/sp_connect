@@ -9,9 +9,12 @@ from .spotify import SpotifyClient
 def fade_to_next(
     client: SpotifyClient,
     playback: dict,
-    fade_seconds: float = 3,
+    fade_out_seconds: float = 3,
+    fade_in_seconds: float = 3,
+    volume_interval_seconds: float = 0.20,
+    fade_in_target_volume: int | None = None,
+    restore_original_volume: bool = True,
     stop_event: threading.Event | None = None,
-    steps: int = 15,
     prepare_next: Callable[[dict], None] | None = None,
 ) -> dict:
     """Fade out, skip, prepare/seek the next track, then fade it in."""
@@ -22,7 +25,7 @@ def fade_to_next(
     device_id = device.get("id")
     original_volume = device.get("volume_percent")
     can_fade = (
-        fade_seconds > 0
+        (fade_out_seconds > 0 or fade_in_seconds > 0)
         and bool(device.get("supports_volume"))
         and original_volume is not None
         and device_id is not None
@@ -31,16 +34,22 @@ def fade_to_next(
     restore_device_id = device_id
     if original_volume is not None:
         print(f"Saved original Spotify volume: {int(original_volume)}%")
+    target_volume = (
+        int(original_volume)
+        if fade_in_target_volume is None
+        else max(0, min(100, int(fade_in_target_volume)))
+    ) if original_volume is not None else 0
 
     try:
         if can_fade:
-            print(f"Fading out over {fade_seconds:.1f}s...")
+            print(f"Fading out over {fade_out_seconds:.1f}s...")
             volume_changed = True
             if not _fade(
-                client, int(original_volume), 0, fade_seconds, device_id, stop_event, steps
+                client, int(original_volume), 0, fade_out_seconds, device_id,
+                stop_event, volume_interval_seconds
             ):
                 return {}
-        elif fade_seconds:
+        elif fade_out_seconds or fade_in_seconds:
             print("Active Spotify device does not support remote volume; skipping fade.")
 
         print("Sending next-track command...")
@@ -58,20 +67,20 @@ def fade_to_next(
             prepare_next(next_playback)
 
         if can_fade:
-            print(f"Fading in over {fade_seconds:.1f}s...")
+            print(f"Fading in over {fade_in_seconds:.1f}s...")
             if not _fade(
                 client,
                 0,
-                int(original_volume),
-                fade_seconds,
+                target_volume,
+                fade_in_seconds,
                 restore_device_id,
                 stop_event,
-                steps,
+                volume_interval_seconds,
             ):
                 return next_playback
         return next_playback
     finally:
-        if volume_changed:
+        if volume_changed and restore_original_volume:
             _restore_volume(client, int(original_volume), stop_event)
 
 
@@ -97,8 +106,13 @@ def _fade(
     duration: float,
     device_id: str,
     stop_event: threading.Event,
-    steps: int,
+    interval_seconds: float,
 ) -> bool:
+    if duration <= 0:
+        client.set_volume(end_volume, device_id=device_id)
+        return True
+    interval_seconds = max(0.05, interval_seconds)
+    steps = max(1, round(duration / interval_seconds))
     interval = duration / steps
     for step in range(1, steps + 1):
         progress = step / steps

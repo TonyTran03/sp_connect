@@ -34,7 +34,11 @@ class QueueWorker:
         source: SongSource,
         excerpt_seconds: float = 45,
         poll_seconds: float = 2,
-        fade_seconds: float = 3,
+        fade_out_seconds: float = 3,
+        fade_in_seconds: float = 3,
+        volume_interval_seconds: float = 0.20,
+        fade_in_target_volume: int | None = None,
+        restore_original_volume: bool = True,
     ) -> None:
         if not 45 <= excerpt_seconds <= 60:
             raise ValueError("excerpt_seconds must be between 45 and 60")
@@ -42,7 +46,11 @@ class QueueWorker:
         self.source = source
         self.excerpt_seconds = excerpt_seconds
         self.poll_seconds = poll_seconds
-        self.fade_seconds = max(0.0, fade_seconds)
+        self.fade_out_seconds = max(0.0, fade_out_seconds)
+        self.fade_in_seconds = max(0.0, fade_in_seconds)
+        self.volume_interval_seconds = max(0.05, volume_interval_seconds)
+        self.fade_in_target_volume = fade_in_target_volume
+        self.restore_original_volume = restore_original_volume
         self._current_track_id: str | None = None
         self._current_track_processed = False
         self._prepared_track: tuple[str, dict] | None = None
@@ -80,9 +88,7 @@ class QueueWorker:
                     print(f"No exact match: {request.title} — {request.artist}")
                     continue
                 self.client.add_to_queue(match["uri"])
-                # Spotify accepted ownership of the request; the database row
-                # is no longer needed and Spotify's queue determines order.
-                self.source.delete(request)
+                self.source.mark_queued(request)
                 print(f"Queued: {match['name']} — {match['artists'][0]['name']}")
             except Exception as error:
                 # Leave transient API failures pending so the next poll retries.
@@ -100,6 +106,7 @@ class QueueWorker:
         if current_id != self._current_track_id:
             self._current_track_id = current_id
             self._current_track_processed = False
+            self.source.finish_head_if_playing(current_id)
         if self._current_track_processed:
             return
 
@@ -133,7 +140,7 @@ class QueueWorker:
             self.client.seek(hook["start"], device_id=device_id)
         excerpt_duration = hook["end"] - hook["start"]
         can_fade = bool(device.get("supports_volume")) and device.get("volume_percent") is not None
-        fade_duration = min(self.fade_seconds, excerpt_duration) if can_fade else 0
+        fade_duration = min(self.fade_out_seconds, excerpt_duration) if can_fade else 0
         play_duration = excerpt_duration - fade_duration
 
         print(f"Playing for {play_duration:.1f}s before transition...")
@@ -145,7 +152,11 @@ class QueueWorker:
         fade_to_next(
             self.client,
             playback,
-            fade_seconds=fade_duration if can_fade else self.fade_seconds,
+            fade_out_seconds=fade_duration if can_fade else self.fade_out_seconds,
+            fade_in_seconds=self.fade_in_seconds,
+            volume_interval_seconds=self.volume_interval_seconds,
+            fade_in_target_volume=self.fade_in_target_volume,
+            restore_original_volume=self.restore_original_volume,
             stop_event=stop_event,
             prepare_next=self._prepare_next_track,
         )

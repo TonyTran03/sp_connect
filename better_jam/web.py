@@ -28,17 +28,14 @@ def create_server(
                 return
             if parsed.path == "/api/queue":
                 response = client.queue()
-                spotify_queue = [track_info(item) for item in response.get("queue", [])]
-                spotify_ids = {item.get("id") for item in spotify_queue}
-                pending = [
-                    item for item in source.pending_tracks()
-                    if item.get("id") not in spotify_ids
-                ]
                 self._json(
                     {
                         "current": track_info(response["currently_playing"])
                         if response.get("currently_playing") else None,
-                        "queue": spotify_queue + pending,
+                        # Next up contains only requests accepted through the
+                        # local/Wi-Fi Better Jam service. Spotify context and
+                        # autoplay items are intentionally excluded.
+                        "queue": source.queued_tracks(),
                     }
                 )
                 return
@@ -64,6 +61,8 @@ def create_server(
                     # A success response now means Spotify itself accepted the
                     # track, rather than merely saving a database request.
                     client.add_to_queue(track["uri"])
+                    source.delete_pending_track(track["id"])
+                    source.record_queued(track)
                     self._json({"ok": True, "queued": True}, status=201)
                 except (urllib.error.HTTPError, OSError) as spotify_error:
                     # Preserve one request for the background worker to retry.

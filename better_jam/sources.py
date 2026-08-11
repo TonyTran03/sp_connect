@@ -29,6 +29,16 @@ class SongSource(Protocol):
 
     def enqueue(self, track: dict) -> int: ...
 
+    def delete_pending_track(self, spotify_track_id: str) -> None: ...
+
+    def record_queued(self, track: dict) -> int: ...
+
+    def mark_queued(self, request: SongRequest) -> None: ...
+
+    def queued_tracks(self) -> list[dict]: ...
+
+    def finish_head_if_playing(self, spotify_track_id: str) -> None: ...
+
     def history(self, limit: int = 100) -> list[dict]: ...
 
     def pending_tracks(self) -> list[dict]: ...
@@ -72,7 +82,7 @@ class SQLiteSongSource:
                 """
             )
             # Migrate rows accepted by Spotify under the previous lifecycle.
-            connection.execute("DELETE FROM song_requests WHERE status IN ('queued', 'finished')")
+            connection.execute("DELETE FROM song_requests WHERE status = 'finished'")
             columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(song_requests)")
             }
@@ -151,6 +161,70 @@ class SQLiteSongSource:
             )
             return int(cursor.lastrowid)
 
+    def delete_pending_track(self, spotify_track_id: str) -> None:
+        with self._connection() as connection:
+            connection.execute(
+                """
+                DELETE FROM song_requests
+                WHERE status = 'pending' AND spotify_track_id = ?
+                """,
+                (spotify_track_id,),
+            )
+
+    def record_queued(self, track: dict) -> int:
+        artists = track.get("artists") or []
+        artist = ", ".join(artists) if isinstance(artists[0] if artists else None, str) else ""
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO song_requests (
+                    title, artist, status, spotify_track_id, spotify_uri,
+                    album, artwork_url, duration_ms
+                ) VALUES (?, ?, 'queued', ?, ?, ?, ?, ?)
+                """,
+                (
+                    track["name"], artist, track["id"], track["uri"],
+                    track.get("album"), track.get("image_url"), track.get("duration_ms"),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def mark_queued(self, request: SongRequest) -> None:
+        self._update(request, "queued", spotify_track_id=request.spotify_track_id)
+
+    def queued_tracks(self) -> list[dict]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT title, artist, spotify_track_id, spotify_uri, album,
+                       artwork_url, duration_ms
+                FROM song_requests
+                WHERE status = 'queued'
+                ORDER BY id
+                """
+            ).fetchall()
+        return [
+            {
+                "name": row["title"], "artists": [row["artist"]],
+                "id": row["spotify_track_id"], "uri": row["spotify_uri"],
+                "album": row["album"], "image_url": row["artwork_url"],
+                "duration_ms": row["duration_ms"],
+            }
+            for row in rows
+        ]
+
+    def finish_head_if_playing(self, spotify_track_id: str) -> None:
+        """Remove one request only when Spotify begins the queue's head item."""
+        with self._connection() as connection:
+            head = connection.execute(
+                """
+                SELECT id, spotify_track_id FROM song_requests
+                WHERE status = 'queued' ORDER BY id LIMIT 1
+                """
+            ).fetchone()
+            if head is not None and head["spotify_track_id"] == spotify_track_id:
+                connection.execute("DELETE FROM song_requests WHERE id = ?", (head["id"],))
+
     def record_played(self, track: dict) -> None:
         artists = ", ".join(item.get("name", "") for item in track.get("artists", []))
         album = track.get("album") or {}
@@ -173,7 +247,12 @@ class SQLiteSongSource:
     def history(self, limit: int = 100) -> list[dict]:
         with self._connection() as connection:
             rows = connection.execute(
-                "SELECT * FROM played_tracks ORDER BY id DESC LIMIT ?", (limit,)
+                """
+                SELECT * FROM (
+                    SELECT * FROM played_tracks ORDER BY id DESC LIMIT ?
+                ) ORDER BY id ASC
+                """,
+                (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
 

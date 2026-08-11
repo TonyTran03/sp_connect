@@ -9,6 +9,7 @@ from better_jam.sources import SQLiteSongSource
 from better_jam.spotify import SpotifyClient
 from better_jam.worker import QueueWorker
 from better_jam.web import create_server
+from better_jam.utils import SETTINGS
  
 
 def main() -> None:
@@ -17,8 +18,13 @@ def main() -> None:
     worker = QueueWorker(
         spotify,
         songs,
-        excerpt_seconds=float_setting("EXCERPT_SECONDS", 45),
-        fade_seconds=float_setting("FADE_SECONDS", 3),
+        excerpt_seconds=SETTINGS.excerpt_seconds,
+        poll_seconds=SETTINGS.poll_seconds,
+        fade_out_seconds=SETTINGS.fade_out_seconds,
+        fade_in_seconds=SETTINGS.fade_in_seconds,
+        volume_interval_seconds=SETTINGS.volume_interval_seconds,
+        fade_in_target_volume=SETTINGS.fade_in_target_volume,
+        restore_original_volume=SETTINGS.restore_original_volume,
     )
     stop_event = threading.Event()
     worker_thread = threading.Thread(
