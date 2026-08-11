@@ -41,7 +41,7 @@ class SongSource(Protocol):
 
     def finish_head_if_playing(self, spotify_track_id: str) -> str | None: ...
 
-    def history(self, limit: int = 100) -> list[dict]: ...
+    def history(self, limit: int | None = None) -> list[dict]: ...
 
     def pending_tracks(self) -> list[dict]: ...
 
@@ -276,16 +276,21 @@ class SQLiteSongSource:
                 ),
             )
 
-    def history(self, limit: int = 100) -> list[dict]:
+    def history(self, limit: int | None = None) -> list[dict]:
         with self._connection() as connection:
-            rows = connection.execute(
-                """
-                SELECT * FROM (
-                    SELECT * FROM played_tracks ORDER BY id DESC LIMIT ?
-                ) ORDER BY id ASC
-                """,
-                (limit,),
-            ).fetchall()
+            if limit is None:
+                rows = connection.execute(
+                    "SELECT * FROM played_tracks ORDER BY id ASC"
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT * FROM (
+                        SELECT * FROM played_tracks ORDER BY id DESC LIMIT ?
+                    ) ORDER BY id ASC
+                    """,
+                    (limit,),
+                ).fetchall()
         return [dict(row) for row in rows]
 
     def pending_tracks(self) -> list[dict]:

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Better Jam</title><link rel="stylesheet" href="./styles.css"><link rel="stylesheet" href="./scroll.css"><link rel="stylesheet" href="./mobile.css"><script src="./app.js?v=3" defer></script>
+  <title>Better Jam</title><link rel="stylesheet" href="./styles.css"><link rel="stylesheet" href="./scroll.css"><link rel="stylesheet" href="./mobile.css"><script src="./site-settings.js?v=1" defer></script><script src="./app.js?v=6" defer></script>
 </head>
 <body>
   <main class="app">
@@ -19,8 +19,8 @@
     <div class="columns">
       <section id="playlistPanel" class="playlist-panel">
         <div class="playlist-hero">
-          <label class="cover-picker"><img id="eventCover" alt="Event artwork"><span>Choose photo</span><input id="coverInput" type="file" accept="image/*" hidden></label>
-          <div class="event-copy"><p>PLAYLIST</p><h1 id="eventTitle" contenteditable="true">MGSC660 Playlist</h1><div id="eventDescription" contenteditable="true">Pick a song above (you may remove from the queue too).</div></div>
+          <div class="cover-picker"><img id="eventCover" alt="Event artwork"></div>
+          <div class="event-copy"><p>PLAYLIST</p><h1 id="eventTitle"></h1><div id="eventDescription"></div></div>
         </div>
         <div class="list-heading"><span>#</span><span>Title</span><span>Played</span></div>
         <div id="playlist" class="track-list"></div>
@@ -28,7 +28,7 @@
 
       <aside class="now-panel">
         <p class="overline">NOW PLAYING</p><div id="nowPlaying" class="now-playing"></div>
-        <div class="next-head"><h2>Next up</h2><span id="queueCount"></span></div>
+        <div class="next-head"><h2>Next up <span id="queueCount"></span></h2></div>
         <div id="nextUp" class="track-list compact"></div>
       </aside>
     </div>

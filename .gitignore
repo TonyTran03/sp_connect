@@ -2,3 +2,5 @@
 .spotify_token.json
 queue.db
 __pycache__/
+
+*.jpg

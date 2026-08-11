@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import argparse
 import json
 import os
 import socket
@@ -37,6 +38,37 @@ def clear_next_up(database_path=PROJECT_ROOT / "queue.db") -> int:
         return int(pending_count + queued_count)
 
 
+def clear_top(count: int, database_path=PROJECT_ROOT / "queue.db") -> int:
+    """Remove the first ``count`` active requests from Next up."""
+    import sqlite3
+
+    if count < 1:
+        raise ValueError("count must be at least 1")
+
+    with sqlite3.connect(database_path) as connection:
+        requests = connection.execute(
+            """
+            SELECT id, status
+            FROM song_requests
+            WHERE status IN ('pending', 'queued')
+            ORDER BY id
+            LIMIT ?
+            """,
+            (count,),
+        ).fetchall()
+        for request_id, status in requests:
+            if status == "pending":
+                connection.execute(
+                    "DELETE FROM song_requests WHERE id = ?", (request_id,)
+                )
+            else:
+                connection.execute(
+                    "UPDATE song_requests SET status = 'cancelled' WHERE id = ?",
+                    (request_id,),
+                )
+        return len(requests)
+
+
 def notify_websocket() -> None:
     key = base64.b64encode(os.urandom(16)).decode()
     with socket.create_connection((WEBSOCKET_HOST, WEBSOCKET_PORT), timeout=5) as connection:
@@ -67,7 +99,20 @@ def notify_websocket() -> None:
 
 
 def main() -> None:
-    removed = clear_next_up()
+    parser = argparse.ArgumentParser(
+        description="Remove songs from the top of Better Jam's Next up queue."
+    )
+    parser.add_argument(
+        "count",
+        nargs="?",
+        type=int,
+        help="number of songs to remove from the top (omit to clear all)",
+    )
+    args = parser.parse_args()
+    if args.count is not None and args.count < 1:
+        parser.error("count must be at least 1")
+
+    removed = clear_top(args.count) if args.count is not None else clear_next_up()
     try:
         notify_websocket()
         print(f"Cleared {removed} Next up request(s); connected devices notified.")
