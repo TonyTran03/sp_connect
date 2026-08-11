@@ -1,10 +1,8 @@
 # Better Jam
 
-Better Jam is a continuously running Spotify queue worker. Other applications
-write song requests to a database; the worker finds an exact Spotify match,
-adds it to the real Spotify queue, detects its repeated hook, plays a 45-second
-excerpt, and advances to the next track. Tracks added manually in Spotify are
-also processed when they become the current track.
+Better Jam starts near the middle of each song and plays it for a short time so
+everyone gets a turn on aux. People on the same local network can search
+Spotify, add a song to the shared queue, and follow what is playing next.
 
 ## Run
 
