@@ -12,6 +12,7 @@ from dataclasses import dataclass
 class JamSettings:
     excerpt_seconds: float = 45
     poll_seconds: float = 2
+    websocket_port: int = 8788
 
     fade_out_seconds: float = 2
     fade_in_seconds: float = 2

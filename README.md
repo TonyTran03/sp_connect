@@ -11,6 +11,11 @@ Set `SPOTIFY_CLIENT_ID` in `.env`, register
 on a Spotify device, then run `main.py` from an IDE or as a background process.
 No command-line arguments are required.
 
+The website uses port `8787`; live WebSocket updates use port `8788`. Allow both
+ports through the host firewall for phones on the same Wi-Fi. Each browser keeps
+a persistent device ID in local storage so later queue ownership/removal can be
+tied to the device that submitted a request.
+
 Optional playback settings also belong in `.env`:
 
 ```env
@@ -42,6 +47,7 @@ better_jam/
   config.py           environment and file locations
   hook_detector.py    repetition-first hook detection
   playback.py         basic excerpt playback helper
+  realtime.py         WebSocket device connections and state broadcasts
   sources.py          database interface and SQLite adapter
   spotify.py          Spotify Web API client
   worker.py           continuous queue orchestration

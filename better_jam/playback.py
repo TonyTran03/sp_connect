@@ -15,7 +15,7 @@ def fade_to_next(
     fade_in_target_volume: int | None = None,
     restore_original_volume: bool = True,
     stop_event: threading.Event | None = None,
-    prepare_next: Callable[[dict], None] | None = None,
+    prepare_next: Callable[[dict], dict | None] | None = None,
 ) -> dict:
     """Fade out, skip, prepare/seek the next track, then fade it in."""
     stop_event = stop_event or threading.Event()
@@ -32,8 +32,6 @@ def fade_to_next(
     )
     volume_changed = False
     restore_device_id = device_id
-    if original_volume is not None:
-        print(f"Saved original Spotify volume: {int(original_volume)}%")
     target_volume = (
         int(original_volume)
         if fade_in_target_volume is None
@@ -41,33 +39,31 @@ def fade_to_next(
     ) if original_volume is not None else 0
 
     try:
+        print("\nTRANSITION")
         if can_fade:
-            print(f"Fading out over {fade_out_seconds:.1f}s...")
             volume_changed = True
             if not _fade(
                 client, int(original_volume), 0, fade_out_seconds, device_id,
                 stop_event, volume_interval_seconds
             ):
                 return {}
-        elif fade_out_seconds or fade_in_seconds:
-            print("Active Spotify device does not support remote volume; skipping fade.")
-
-        print("Sending next-track command...")
         client.next_track()
-        print("Next-track command accepted. Confirming transition...")
 
         next_playback = _wait_for_next(client, current_id, stop_event)
-        next_item = next_playback.get("item") or {}
         next_device = next_playback.get("device") or {}
         restore_device_id = next_device.get("id") or device_id
-        print(f"Now playing: {next_item.get('name', 'next track')}")
 
         if prepare_next:
-            print("Preparing next track while volume is down...")
-            prepare_next(next_playback)
+            prepared_playback = prepare_next(next_playback)
+            if prepared_playback:
+                next_playback = prepared_playback
+                next_device = next_playback.get("device") or {}
+                restore_device_id = next_device.get("id") or restore_device_id
+
+        next_item = next_playback.get("item") or {}
+        print(f"  Next     {next_item.get('name', 'next track')}")
 
         if can_fade:
-            print(f"Fading in over {fade_in_seconds:.1f}s...")
             if not _fade(
                 client,
                 0,
@@ -138,12 +134,7 @@ def _restore_volume(
         playback = client.playback_state()
         device = playback.get("device") or {}
         reported_volume = device.get("volume_percent")
-        print(
-            f"Volume restore attempt {attempt}: requested {original_volume}%, "
-            f"Spotify reports {reported_volume!r}%"
-        )
         if reported_volume is not None and abs(int(reported_volume) - original_volume) <= 2:
-            print(f"Volume restored to {original_volume}%.")
             return
     print(
         f"Warning: Spotify did not confirm restoration to {original_volume}% "

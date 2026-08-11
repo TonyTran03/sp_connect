@@ -2,6 +2,18 @@
   display: none;
 }
 
+.remove {
+  padding: 6px 10px;
+  border: 1px solid #666;
+  border-radius: 999px;
+  background: transparent;
+  color: #ddd;
+  font-size: .72rem;
+  cursor: pointer;
+}
+
+.remove:hover { border-color: #fff; color: #fff; }
+
 @media (max-width: 900px) {
   .topbar {
     display: flex;

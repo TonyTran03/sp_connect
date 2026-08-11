@@ -10,11 +10,14 @@ from better_jam.spotify import SpotifyClient
 from better_jam.worker import QueueWorker
 from better_jam.web import create_server
 from better_jam.utils import SETTINGS
+from better_jam.realtime import WebSocketHub
+from better_jam.sessions import DeviceSessions
  
 
 def main() -> None:
     spotify = SpotifyClient(get_access_token(client_id()))
     songs = SQLiteSongSource(PROJECT_ROOT / "queue.db")
+    sessions = DeviceSessions(PROJECT_ROOT / ".device_secret")
     worker = QueueWorker(
         spotify,
         songs,
@@ -27,6 +30,14 @@ def main() -> None:
         restore_original_volume=SETTINGS.restore_original_volume,
     )
     stop_event = threading.Event()
+    realtime = WebSocketHub(
+        spotify,
+        songs,
+        sessions,
+        port=SETTINGS.websocket_port,
+        poll_seconds=SETTINGS.poll_seconds,
+    )
+    realtime.start()
     worker_thread = threading.Thread(
         target=worker.run_forever,
         args=(stop_event,),
@@ -36,8 +47,15 @@ def main() -> None:
     worker_thread.start()
 
     web_port = int(float_setting("WEB_PORT", 8787))
-    server = create_server(spotify, songs, port=web_port)
+    server = create_server(
+        spotify,
+        songs,
+        sessions,
+        on_queue_change=realtime.publish_state,
+        port=web_port,
+    )
     print(f"Website available on this computer at http://127.0.0.1:{web_port}")
+    print(f"Live updates available on WebSocket port {SETTINGS.websocket_port}")
     try:
         local_ip = socket.gethostbyname(socket.gethostname())
         print(f"Other devices on this Wi-Fi can try http://{local_ip}:{web_port}")
@@ -49,6 +67,7 @@ def main() -> None:
         print("Stopping Better Jam...")
     finally:
         stop_event.set()
+        realtime.close()
         server.server_close()
 
 

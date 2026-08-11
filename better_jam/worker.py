@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import threading
+import time
 import unicodedata
 import urllib.error
 
@@ -15,6 +16,11 @@ def _normalized(value: str) -> str:
     value = unicodedata.normalize("NFKD", value).casefold()
     value = "".join(character for character in value if not unicodedata.combining(character))
     return re.sub(r"[^a-z0-9]+", " ", value).strip()
+
+
+def _clock(seconds: float) -> str:
+    minutes, remainder = divmod(max(0.0, seconds), 60)
+    return f"{int(minutes)}:{remainder:04.1f}"
 
 
 def exact_track_match(title: str, artist: str, candidates: list[dict]) -> dict | None:
@@ -106,7 +112,21 @@ class QueueWorker:
         if current_id != self._current_track_id:
             self._current_track_id = current_id
             self._current_track_processed = False
-            self.source.finish_head_if_playing(current_id)
+            request_status = self.source.finish_head_if_playing(current_id)
+            if request_status == "cancelled":
+                self._current_track_processed = True
+                fade_to_next(
+                    self.client,
+                    playback,
+                    fade_out_seconds=self.fade_out_seconds,
+                    fade_in_seconds=self.fade_in_seconds,
+                    volume_interval_seconds=self.volume_interval_seconds,
+                    fade_in_target_volume=self.fade_in_target_volume,
+                    restore_original_volume=self.restore_original_volume,
+                    stop_event=stop_event,
+                    prepare_next=self._prepare_next_track,
+                )
+                return
         if self._current_track_processed:
             return
 
@@ -121,21 +141,22 @@ class QueueWorker:
             self._prepared_track = None
         else:
             hook = self._find_hook(current)
+        artists = ", ".join(item.get("name", "") for item in current.get("artists", []))
+        print(f"\nNOW PLAYING: {current.get('name')} - {artists}")
         print(
-            f"Playing {current.get('name')} from {hook['start']:.1f}s "
-            f"to {hook['end']:.1f}s ({hook['method']}, {hook['confidence']} confidence)"
+            f"  Excerpt  {_clock(hook['start'])} - {_clock(hook['end'])} "
+            f"({hook['method']}, {hook['confidence']} confidence)"
         )
         device = playback.get("device") or {}
         device_id = device.get("id")
         if not device_id:
             self._current_track_processed = False
             raise RuntimeError("Spotify did not report an active playback device")
-        print(f"Controlling Spotify device: {device.get('name', device_id)}")
-        repeat_state = playback.get("repeat_state", "unknown")
-        print(f"Spotify repeat state: {repeat_state}")
-        if repeat_state != "off":
-            self.client.set_repeat("off", device_id=device_id)
-            print("Spotify repeat disabled for queue progression.")
+        # repeat_state = playback.get("repeat_state", "unknown")
+        # print(f"Spotify repeat state: {repeat_state}")
+        # if repeat_state != "off":
+        #     self.client.set_repeat("off", device_id=device_id)
+        #     print("Spotify repeat disabled for queue progression.")
         if not already_prepared:
             self.client.seek(hook["start"], device_id=device_id)
         excerpt_duration = hook["end"] - hook["start"]
@@ -143,8 +164,11 @@ class QueueWorker:
         fade_duration = min(self.fade_out_seconds, excerpt_duration) if can_fade else 0
         play_duration = excerpt_duration - fade_duration
 
-        print(f"Playing for {play_duration:.1f}s before transition...")
-        if stop_event.wait(play_duration):
+        print(
+            f"  Device   {device.get('name', device_id)}\n"
+            f"  Next     transition in {play_duration:.1f}s"
+        )
+        if not self._wait_for_track(current_id, play_duration, stop_event):
             return
 
         self.source.record_played(current)
@@ -161,6 +185,32 @@ class QueueWorker:
             prepare_next=self._prepare_next_track,
         )
 
+    def _wait_for_track(
+        self,
+        track_id: str,
+        duration: float,
+        stop_event: threading.Event,
+    ) -> bool:
+        """Wait for the excerpt, cancelling its timer after a manual skip."""
+        deadline = time.monotonic() + duration
+        check_interval = min(max(self.poll_seconds, 0.5), 2.0)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return True
+            if stop_event.wait(min(remaining, check_interval)):
+                return False
+            playback = self.client.playback_state()
+            current = playback.get("item") or {}
+            new_track_id = current.get("id")
+            if new_track_id != track_id:
+                # Keep the previous ID here. On the next worker pass, the
+                # normal track-change branch must observe the new ID so it can
+                # consume the matching Next up row (and handle cancellations).
+                self._current_track_processed = False
+                print("\nMANUAL SKIP: starting a fresh excerpt timer.")
+                return False
+
     def _find_hook(self, track: dict) -> dict:
         track_id = track.get("id")
         try:
@@ -172,22 +222,33 @@ class QueueWorker:
             if error.code != 403:
                 raise
             duration = float(track.get("duration_ms", 0)) / 1000
-            print(
-                "Spotify denied Audio Analysis (403). "
-                "Using a middle excerpt because structural hook detection is unavailable."
-            )
+            # print("  Analysis unavailable (Spotify 403); using the middle excerpt.")
             return _middle_excerpt(duration, self.excerpt_seconds)
 
-    def _prepare_next_track(self, playback: dict) -> None:
+    def _prepare_next_track(self, playback: dict) -> dict:
         track = playback.get("item") or {}
         track_id = track.get("id")
         device_id = (playback.get("device") or {}).get("id")
         if not track_id or not device_id:
             raise RuntimeError("Spotify did not report the next track or active device")
+        while self.source.finish_head_if_playing(track_id) == "cancelled":
+            previous_track_id = track_id
+            self.client.next_track(device_id=device_id)
+            for _ in range(20):
+                time.sleep(0.25)
+                playback = self.client.playback_state()
+                track = playback.get("item") or {}
+                track_id = track.get("id")
+                device_id = (playback.get("device") or {}).get("id") or device_id
+                if track_id and track_id != previous_track_id:
+                    break
+            else:
+                raise RuntimeError("Cancelled song did not advance to the next track")
         hook = self._find_hook(track)
         self.client.seek(hook["start"], device_id=device_id)
         self._prepared_track = (track_id, hook)
-        print(f"Next track positioned at {hook['start']:.1f}s; beginning fade-in.")
+        print(f"  Start    {_clock(hook['start'])}")
+        return playback
 
 
 def _middle_excerpt(duration: float, excerpt_seconds: float) -> dict:

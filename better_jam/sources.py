@@ -37,7 +37,9 @@ class SongSource(Protocol):
 
     def queued_tracks(self) -> list[dict]: ...
 
-    def finish_head_if_playing(self, spotify_track_id: str) -> None: ...
+    def delete_owned_queued(self, request_id: int, device_id: str) -> bool: ...
+
+    def finish_head_if_playing(self, spotify_track_id: str) -> str | None: ...
 
     def history(self, limit: int = 100) -> list[dict]: ...
 
@@ -91,6 +93,7 @@ class SQLiteSongSource:
                 "album": "TEXT",
                 "artwork_url": "TEXT",
                 "duration_ms": "INTEGER",
+                "requested_by_device": "TEXT",
             }.items():
                 if name not in columns:
                     connection.execute(f"ALTER TABLE song_requests ADD COLUMN {name} {definition}")
@@ -151,12 +154,13 @@ class SQLiteSongSource:
                 """
                 INSERT INTO song_requests (
                     title, artist, spotify_track_id, spotify_uri, album,
-                    artwork_url, duration_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    artwork_url, duration_ms, requested_by_device
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     track["name"], artist, track["id"], track["uri"],
                     track.get("album"), track.get("image_url"), track.get("duration_ms"),
+                    track.get("requested_by_device"),
                 ),
             )
             return int(cursor.lastrowid)
@@ -179,12 +183,13 @@ class SQLiteSongSource:
                 """
                 INSERT INTO song_requests (
                     title, artist, status, spotify_track_id, spotify_uri,
-                    album, artwork_url, duration_ms
-                ) VALUES (?, ?, 'queued', ?, ?, ?, ?, ?)
+                    album, artwork_url, duration_ms, requested_by_device
+                ) VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     track["name"], artist, track["id"], track["uri"],
                     track.get("album"), track.get("image_url"), track.get("duration_ms"),
+                    track.get("requested_by_device"),
                 ),
             )
             return int(cursor.lastrowid)
@@ -196,8 +201,8 @@ class SQLiteSongSource:
         with self._connection() as connection:
             rows = connection.execute(
                 """
-                SELECT title, artist, spotify_track_id, spotify_uri, album,
-                       artwork_url, duration_ms
+                SELECT id, title, artist, spotify_track_id, spotify_uri, album,
+                       artwork_url, duration_ms, requested_by_device
                 FROM song_requests
                 WHERE status = 'queued'
                 ORDER BY id
@@ -205,25 +210,52 @@ class SQLiteSongSource:
             ).fetchall()
         return [
             {
+                "queue_request_id": row["id"],
                 "name": row["title"], "artists": [row["artist"]],
                 "id": row["spotify_track_id"], "uri": row["spotify_uri"],
                 "album": row["album"], "image_url": row["artwork_url"],
                 "duration_ms": row["duration_ms"],
+                "requested_by_device": row["requested_by_device"],
             }
             for row in rows
         ]
 
-    def finish_head_if_playing(self, spotify_track_id: str) -> None:
-        """Remove one request only when Spotify begins the queue's head item."""
+    def delete_owned_queued(self, request_id: int, device_id: str) -> bool:
+        with self._connection() as connection:
+            request = connection.execute(
+                """
+                SELECT status FROM song_requests
+                WHERE id = ? AND status IN ('pending', 'queued')
+                  AND requested_by_device = ?
+                """,
+                (request_id, device_id),
+            ).fetchone()
+            if request is None:
+                return False
+            if request["status"] == "pending":
+                connection.execute("DELETE FROM song_requests WHERE id = ?", (request_id,))
+            else:
+                # Spotify cannot remove an accepted queue item. Keep a hidden
+                # marker so the worker can skip it when its turn arrives.
+                connection.execute(
+                    "UPDATE song_requests SET status = 'cancelled' WHERE id = ?",
+                    (request_id,),
+                )
+            return True
+
+    def finish_head_if_playing(self, spotify_track_id: str) -> str | None:
+        """Consume the matching head and return queued or cancelled."""
         with self._connection() as connection:
             head = connection.execute(
                 """
-                SELECT id, spotify_track_id FROM song_requests
-                WHERE status = 'queued' ORDER BY id LIMIT 1
+                SELECT id, spotify_track_id, status FROM song_requests
+                WHERE status IN ('queued', 'cancelled') ORDER BY id LIMIT 1
                 """
             ).fetchone()
             if head is not None and head["spotify_track_id"] == spotify_track_id:
                 connection.execute("DELETE FROM song_requests WHERE id = ?", (head["id"],))
+                return str(head["status"])
+        return None
 
     def record_played(self, track: dict) -> None:
         artists = ", ".join(item.get("name", "") for item in track.get("artists", []))
@@ -261,7 +293,7 @@ class SQLiteSongSource:
             rows = connection.execute(
                 """
                 SELECT title, artist, spotify_track_id, spotify_uri, album,
-                       artwork_url, duration_ms
+                       artwork_url, duration_ms, requested_by_device
                 FROM song_requests
                 WHERE status = 'pending'
                 ORDER BY id
@@ -276,6 +308,7 @@ class SQLiteSongSource:
                 "album": row["album"],
                 "image_url": row["artwork_url"],
                 "duration_ms": row["duration_ms"],
+                "requested_by_device": row["requested_by_device"],
                 "queue_status": "pending",
             }
             for row in rows
