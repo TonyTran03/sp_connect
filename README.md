@@ -19,8 +19,8 @@ tied to the device that submitted a request.
 For a public tunnel, copy `.env.example` to `.env` and set the public origin:
 
 ```env
-PUBLIC_URL=https://jam.mytonytran.ca
-PUBLIC_WEBSOCKET_URL=wss://jam.mytonytran.ca/ws
+PUBLIC_URL=https://
+PUBLIC_WEBSOCKET_URL=wss:
 ```
 
 Route ordinary traffic to `http://localhost:8787` and `/ws` WebSocket traffic
