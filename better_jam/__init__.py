@@ -1,0 +1,2 @@
+"""Spotify highlight player."""
+

@@ -1,3 +1,6 @@
 .env
 .spotify_token.json
+queue.db
+queue.db-shm
+queue.db-wal
 __pycache__/
