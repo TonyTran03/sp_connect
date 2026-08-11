@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class JamSettings:
-    excerpt_seconds: float = 45
+    excerpt_seconds: float = 55
     poll_seconds: float = 2
     websocket_port: int = 8788
 

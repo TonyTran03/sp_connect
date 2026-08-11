@@ -21,6 +21,7 @@ def create_server(
     source: SongSource,
     sessions: DeviceSessions,
     on_queue_change: Callable[[], None] | None = None,
+    websocket_public_url: str = "",
     host: str = "0.0.0.0",
     port: int = 8000,
 ) -> ThreadingHTTPServer:
@@ -29,6 +30,9 @@ def create_server(
             parsed = urllib.parse.urlparse(self.path)
             if parsed.path == "/api/search":
                 self._search(parsed.query)
+                return
+            if parsed.path == "/api/config":
+                self._json({"websocket_url": websocket_public_url})
                 return
             if parsed.path == "/api/queue":
                 response = client.queue()
@@ -44,11 +48,17 @@ def create_server(
                         # local/Wi-Fi Better Jam service. Spotify context and
                         # autoplay items are intentionally excluded.
                         "queue": queue,
+                        "device_id": device_id,
                     }
                 )
                 return
             if parsed.path == "/api/history":
                 self._json({"tracks": source.history()})
+                return
+            if parsed.path == "/favicon.ico":
+                self.send_response(204)
+                self.send_header("Cache-Control", "public, max-age=86400")
+                self.end_headers()
                 return
             self._static(parsed.path)
 
@@ -99,7 +109,10 @@ def create_server(
                     if on_queue_change:
                         on_queue_change()
                     print(f"Queued by device {device_id}: {track['name']}")
-                    self._json({"ok": True, "queued": True}, status=201)
+                    self._json(
+                        {"ok": True, "queued": True, "device_id": device_id},
+                        status=201,
+                    )
                 except (urllib.error.HTTPError, OSError) as spotify_error:
                     # Preserve one request for the background worker to retry.
                     request_id = source.enqueue(track)
@@ -111,6 +124,7 @@ def create_server(
                             "queued": False,
                             "request_id": request_id,
                             "message": "Saved as pending; Spotify will retry it",
+                            "device_id": device_id,
                         },
                         status=202,
                     )
@@ -172,6 +186,8 @@ def create_server(
                 and status.startswith(("2", "3"))
             )
             if is_static_success:
+                return
+            if request_line.startswith(("GET / HTTP/", "GET /favicon.ico HTTP/")):
                 return
             if request_line.startswith(
                 (

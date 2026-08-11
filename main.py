@@ -4,7 +4,7 @@ import threading
 import socket
 
 from better_jam.auth import get_access_token
-from better_jam.config import PROJECT_ROOT, client_id, float_setting
+from better_jam.config import PROJECT_ROOT, client_id, float_setting, string_setting
 from better_jam.sources import SQLiteSongSource
 from better_jam.spotify import SpotifyClient
 from better_jam.worker import QueueWorker
@@ -17,7 +17,18 @@ from better_jam.sessions import DeviceSessions
 def main() -> None:
     spotify = SpotifyClient(get_access_token(client_id()))
     songs = SQLiteSongSource(PROJECT_ROOT / "queue.db")
-    sessions = DeviceSessions(PROJECT_ROOT / ".device_secret")
+    public_url = string_setting("PUBLIC_URL")
+    websocket_public_url = string_setting("PUBLIC_WEBSOCKET_URL")
+    if not websocket_public_url and public_url:
+        websocket_public_url = (
+            public_url.replace("https://", "wss://", 1)
+            .replace("http://", "ws://", 1)
+            .rstrip("/") + "/ws"
+        )
+    sessions = DeviceSessions(
+        PROJECT_ROOT / ".device_secret",
+        secure_cookie=public_url.startswith("https://"),
+    )
     worker = QueueWorker(
         spotify,
         songs,
@@ -52,6 +63,7 @@ def main() -> None:
         songs,
         sessions,
         on_queue_change=realtime.publish_state,
+        websocket_public_url=websocket_public_url,
         port=web_port,
     )
     print(f"Website available on this computer at http://127.0.0.1:{web_port}")

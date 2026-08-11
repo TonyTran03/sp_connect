@@ -13,8 +13,9 @@ from pathlib import Path
 class DeviceSessions:
     cookie_name = "better_jam_session"
 
-    def __init__(self, secret_file: Path) -> None:
+    def __init__(self, secret_file: Path, secure_cookie: bool = False) -> None:
         self.secret_file = secret_file
+        self.secure_cookie = secure_cookie
         if secret_file.exists():
             self.secret = secret_file.read_bytes()
         else:
@@ -41,9 +42,10 @@ class DeviceSessions:
         return None
 
     def set_cookie_header(self, token: str) -> str:
+        secure = "; Secure" if self.secure_cookie else ""
         return (
             f"{self.cookie_name}={token}; Path=/; HttpOnly; "
-            "SameSite=Lax; Max-Age=31536000"
+            f"SameSite=Lax; Max-Age=31536000{secure}"
         )
 
     def _signature(self, device_id: str) -> str:

@@ -39,3 +39,8 @@ def float_setting(name: str, default: float) -> float:
         return float(raw_value)
     except ValueError as error:
         raise RuntimeError(f"{name} must be a number, got {raw_value!r}") from error
+
+
+def string_setting(name: str, default: str = "") -> str:
+    load_env()
+    return os.getenv(name, default).strip()

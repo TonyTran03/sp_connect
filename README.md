@@ -16,6 +16,17 @@ ports through the host firewall for phones on the same Wi-Fi. Each browser keeps
 a persistent device ID in local storage so later queue ownership/removal can be
 tied to the device that submitted a request.
 
+For a public tunnel, copy `.env.example` to `.env` and set the public origin:
+
+```env
+PUBLIC_URL=https://jam.mytonytran.ca
+PUBLIC_WEBSOCKET_URL=wss://jam.mytonytran.ca/ws
+```
+
+Route ordinary traffic to `http://localhost:8787` and `/ws` WebSocket traffic
+to `http://localhost:8788` through the tunnel. Guests never connect directly to
+either local port.
+
 Optional playback settings also belong in `.env`:
 
 ```env
