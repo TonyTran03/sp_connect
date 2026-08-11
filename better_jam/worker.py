@@ -9,7 +9,7 @@ import urllib.error
 from .hook_detector import detect_hook
 from .playback import fade_to_next
 from .sources import SongSource
-from .spotify import SpotifyClient
+from .spotify import SpotifyClient, rate_limit_message
 
 
 def _normalized(value: str) -> str:
@@ -69,8 +69,11 @@ class QueueWorker:
                 self._enqueue_pending()
                 self._process_current_track(stop_event)
             except urllib.error.HTTPError as error:
-                detail = error.read().decode(errors="replace")
-                print(f"Spotify API error ({error.code}): {detail}")
+                if error.code == 429:
+                    print(rate_limit_message(error))
+                else:
+                    detail = error.read().decode(errors="replace")
+                    print(f"Spotify API error ({error.code}): {detail}")
             except (OSError, RuntimeError, ValueError) as error:
                 print(f"Worker error: {error}")
             stop_event.wait(self.poll_seconds)
@@ -98,6 +101,8 @@ class QueueWorker:
                 print(f"Queued: {match['name']} — {match['artists'][0]['name']}")
             except Exception as error:
                 # Leave transient API failures pending so the next poll retries.
+                if isinstance(error, urllib.error.HTTPError) and error.code == 429:
+                    raise
                 print(f"Could not queue {request.title}: {error}")
 
     def _process_current_track(self, stop_event: threading.Event) -> None:
@@ -193,7 +198,7 @@ class QueueWorker:
     ) -> bool:
         """Wait for the excerpt, cancelling its timer after a manual skip."""
         deadline = time.monotonic() + duration
-        check_interval = min(max(self.poll_seconds, 0.5), 2.0)
+        check_interval = min(max(self.poll_seconds, 0.5), 5.0)
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:

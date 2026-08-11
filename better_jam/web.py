@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import threading
+import time
 import urllib.error
 import urllib.parse
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from .spotify import SpotifyClient, track_info
+from .spotify import SpotifyClient, rate_limit_message, track_info
 from .sources import SongSource
 from .sessions import DeviceSessions
 
@@ -21,10 +23,15 @@ def create_server(
     source: SongSource,
     sessions: DeviceSessions,
     on_queue_change: Callable[[], None] | None = None,
+    current_track: Callable[[], dict | None] | None = None,
     websocket_public_url: str = "",
     host: str = "0.0.0.0",
     port: int = 8000,
 ) -> ThreadingHTTPServer:
+    search_cache: dict[str, tuple[float, list[dict]]] = {}
+    search_cache_lock = threading.Lock()
+    search_cache_seconds = 300
+
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
             parsed = urllib.parse.urlparse(self.path)
@@ -35,15 +42,13 @@ def create_server(
                 self._json({"websocket_url": websocket_public_url})
                 return
             if parsed.path == "/api/queue":
-                response = client.queue()
                 device_id = self._device_id()
                 queue = source.queued_tracks()
                 for item in queue:
                     item["can_remove"] = item.get("requested_by_device") == device_id
                 self._json(
                     {
-                        "current": track_info(response["currently_playing"])
-                        if response.get("currently_playing") else None,
+                        "current": current_track() if current_track else None,
                         # Next up contains only requests accepted through the
                         # local/Wi-Fi Better Jam service. Spotify context and
                         # autoplay items are intentionally excluded.
@@ -136,13 +141,31 @@ def create_server(
             if len(query) < 2:
                 self._json({"tracks": []})
                 return
+            cache_key = " ".join(query.casefold().split())
+            with search_cache_lock:
+                cached = search_cache.get(cache_key)
+            if cached and time.monotonic() - cached[0] < search_cache_seconds:
+                self._json({"tracks": cached[1]})
+                return
             try:
                 tracks = [track_info(item) for item in client.search(query, limit=10)]
+                with search_cache_lock:
+                    if len(search_cache) >= 500:
+                        oldest = min(search_cache, key=lambda key: search_cache[key][0])
+                        search_cache.pop(oldest, None)
+                    search_cache[cache_key] = (time.monotonic(), tracks)
                 self._json({"tracks": tracks})
             except urllib.error.HTTPError as error:
-                detail = error.read().decode(errors="replace")
+                detail = getattr(error, "spotify_error_detail", None)
+                if detail is None:
+                    detail = error.read().decode(errors="replace")
                 self._json(
-                    {"error": f"Spotify search failed ({error.code})", "detail": detail},
+                    {
+                        "error": rate_limit_message(error)
+                        if error.code == 429
+                        else f"Spotify search failed ({error.code})",
+                        "detail": detail,
+                    },
                     status=error.code,
                 )
             except OSError as error:
@@ -193,6 +216,7 @@ def create_server(
                 (
                     "GET /api/queue ",
                     "GET /api/history ",
+                    "GET /api/config ",
                     "GET /api/search?",
                     "POST /api/queue ",
                     "DELETE /api/queue/",

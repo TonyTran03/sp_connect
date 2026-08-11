@@ -9,9 +9,10 @@ import socket
 import socketserver
 import struct
 import threading
+import urllib.error
 
 from .sources import SongSource
-from .spotify import SpotifyClient, track_info
+from .spotify import SpotifyClient, rate_limit_message, track_info
 from .sessions import DeviceSessions
 
 
@@ -102,12 +103,17 @@ class WebSocketHub:
     def _watch_state(self) -> None:
         while not self.stop_event.is_set():
             try:
-                response = self.spotify.queue()
+                response = self.spotify.playback_state()
                 current = (
-                    track_info(response["currently_playing"])
-                    if response.get("currently_playing") else None
+                    track_info(response["item"])
+                    if response.get("item") else None
                 )
                 self.publish_state(current=current)
+            except urllib.error.HTTPError as error:
+                if error.code == 429:
+                    print(rate_limit_message(error))
+                else:
+                    print(f"WebSocket state error: HTTP {error.code}")
             except (OSError, RuntimeError, ValueError) as error:
                 print(f"WebSocket state error: {error}")
             self.stop_event.wait(self.poll_seconds)

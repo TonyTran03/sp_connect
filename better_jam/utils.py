@@ -11,12 +11,12 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class JamSettings:
     excerpt_seconds: float = 55
-    poll_seconds: float = 2
+    poll_seconds: float = 5
     websocket_port: int = 8788
 
     fade_out_seconds: float = 2
     fade_in_seconds: float = 2
-    volume_interval_seconds: float = 0.20
+    volume_interval_seconds: float = 0.5
 
     # None means return to the volume Spotify reported before the fade began.
     # Set this to a number from 0 to 100 to always fade back to a fixed volume.

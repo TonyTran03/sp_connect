@@ -63,6 +63,9 @@ def main() -> None:
         songs,
         sessions,
         on_queue_change=realtime.publish_state,
+        current_track=lambda: (
+            realtime.latest_state.get("current") if realtime.latest_state else None
+        ),
         websocket_public_url=websocket_public_url,
         port=web_port,
     )
