@@ -41,11 +41,12 @@ class DeviceSessions:
             return device_id
         return None
 
-    def set_cookie_header(self, token: str) -> str:
-        secure = "; Secure" if self.secure_cookie else ""
+    def set_cookie_header(self, token: str, secure: bool | None = None) -> str:
+        use_secure = self.secure_cookie if secure is None else secure
+        secure_attribute = "; Secure" if use_secure else ""
         return (
             f"{self.cookie_name}={token}; Path=/; HttpOnly; "
-            f"SameSite=Lax; Max-Age=31536000{secure}"
+            f"SameSite=Lax; Max-Age=31536000{secure_attribute}"
         )
 
     def _signature(self, device_id: str) -> str:

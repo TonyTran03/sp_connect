@@ -31,6 +31,7 @@ def fade_to_next(
         and device_id is not None
     )
     volume_changed = False
+    transition_complete = False
     restore_device_id = device_id
     target_volume = (
         int(original_volume)
@@ -74,9 +75,12 @@ def fade_to_next(
                 volume_interval_seconds,
             ):
                 return next_playback
+        transition_complete = True
         return next_playback
     finally:
-        if volume_changed and restore_original_volume:
+        # A successful fade-in already ends at the requested target. Restore
+        # and verify only if an interruption/error leaves volume mid-fade.
+        if volume_changed and restore_original_volume and not transition_complete:
             _restore_volume(client, int(original_volume), stop_event)
 
 
@@ -112,7 +116,18 @@ def _fade(
     interval = duration / steps
     for step in range(1, steps + 1):
         progress = step / steps
-        eased = progress**3 * (progress * (progress * 6 - 15) + 10)
+        if steps == 5:
+            # Party transition curve requested for a two-second fade:
+            # out: 100, 90, 70, 40, 20, 0
+            # in:    0, 20, 40, 70, 90, 100
+            curve = (
+                (0.10, 0.30, 0.60, 0.80, 1.00)
+                if end_volume < start_volume
+                else (0.20, 0.40, 0.70, 0.90, 1.00)
+            )
+            eased = curve[step - 1]
+        else:
+            eased = progress**3 * (progress * (progress * 6 - 15) + 10)
         volume = round(start_volume + (end_volume - start_volume) * eased)
         if stop_event.wait(interval):
             return False

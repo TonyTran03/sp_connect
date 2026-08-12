@@ -42,11 +42,13 @@ INSERT INTO song_requests (title, artist)
 VALUES ('Blinding Lights', 'The Weeknd');
 ```
 
-Rows exist only while waiting to be submitted:
+Guest requests are accepted locally first and broadcast immediately. The queue
+feeder submits at most one track per poll until five tracks are accepted ahead
+by Spotify:
 
 ```text
-pending -> accepted by Spotify -> row deleted
-        \-> failed (kept for inspection when no exact match exists)
+pending -> queued in Spotify -> playing -> played history
+        \-> failed (kept for inspection when Spotify rejects it)
 ```
 
 ## Package structure
@@ -64,10 +66,9 @@ better_jam/
   worker.py           continuous queue orchestration
 ```
 
-Spotify's queue is the sole source of truth for playback order. To use Postgres,
-Supabase, or another external database, implement the
+Better Jam's database is the source of truth for guest requests while Spotify
+holds only a small playback buffer. To use Postgres, Supabase, or another
+external database, implement the
 `SongSource` protocol in `sources.py` and pass that implementation to
-`QueueWorker` in `main.py`. Spotify Audio Analysis is restricted for many newer
-developer applications. On a 403, the worker remains running and uses a neutral
-middle excerpt because structural hook detection is not possible without the
-analysis data.
+`QueueWorker` in `main.py`. Excerpts use the middle of each track without calling
+Spotify Audio Analysis.

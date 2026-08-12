@@ -6,7 +6,6 @@ import time
 import unicodedata
 import urllib.error
 
-from .hook_detector import detect_hook
 from .playback import fade_to_next
 from .sources import SongSource
 from .spotify import SpotifyClient, rate_limit_message
@@ -45,6 +44,7 @@ class QueueWorker:
         volume_interval_seconds: float = 0.20,
         fade_in_target_volume: int | None = None,
         restore_original_volume: bool = True,
+        queue_ahead: int = 5,
     ) -> None:
         if not 45 <= excerpt_seconds <= 60:
             raise ValueError("excerpt_seconds must be between 45 and 60")
@@ -57,6 +57,7 @@ class QueueWorker:
         self.volume_interval_seconds = max(0.05, volume_interval_seconds)
         self.fade_in_target_volume = fade_in_target_volume
         self.restore_original_volume = restore_original_volume
+        self.queue_ahead = max(1, int(queue_ahead))
         self._current_track_id: str | None = None
         self._current_track_processed = False
         self._prepared_track: tuple[str, dict] | None = None
@@ -64,9 +65,14 @@ class QueueWorker:
     def run_forever(self, stop_event: threading.Event | None = None) -> None:
         stop_event = stop_event or threading.Event()
         print("Queue worker started. Monitoring Spotify and the request database...")
+        threading.Thread(
+            target=self._feed_queue_forever,
+            args=(stop_event,),
+            daemon=True,
+            name="spotify-queue-feeder",
+        ).start()
         while not stop_event.is_set():
             try:
-                self._enqueue_pending()
                 self._process_current_track(stop_event)
             except urllib.error.HTTPError as error:
                 if error.code == 429:
@@ -78,8 +84,26 @@ class QueueWorker:
                 print(f"Worker error: {error}")
             stop_event.wait(self.poll_seconds)
 
+    def _feed_queue_forever(self, stop_event: threading.Event) -> None:
+        """Fill Spotify gradually without blocking the excerpt timer."""
+        while not stop_event.is_set():
+            try:
+                self._enqueue_pending()
+            except urllib.error.HTTPError as error:
+                if error.code == 429:
+                    print(rate_limit_message(error))
+                else:
+                    print(f"Spotify queue error ({error.code})")
+            except (OSError, RuntimeError, ValueError) as error:
+                print(f"Queue feeder error: {error}")
+            stop_event.wait(self.poll_seconds)
+
     def _enqueue_pending(self) -> None:
-        for request in self.source.pending():
+        # Smooth party bursts into at most one Spotify queue request per poll.
+        # Five accepted tracks is ample headroom for 55-second excerpts.
+        if self.source.accepted_queue_count() >= self.queue_ahead:
+            return
+        for request in self.source.pending(limit=1):
             try:
                 match = None
                 if request.spotify_uri and request.spotify_track_id:
@@ -101,8 +125,11 @@ class QueueWorker:
                 print(f"Queued: {match['name']} — {match['artists'][0]['name']}")
             except Exception as error:
                 # Leave transient API failures pending so the next poll retries.
-                if isinstance(error, urllib.error.HTTPError) and error.code == 429:
-                    raise
+                if isinstance(error, urllib.error.HTTPError):
+                    if error.code == 429:
+                        raise
+                    if 400 <= error.code < 500:
+                        self.source.mark_failed(request, f"Spotify rejected request ({error.code})")
                 print(f"Could not queue {request.title}: {error}")
 
     def _process_current_track(self, stop_event: threading.Event) -> None:
@@ -148,10 +175,7 @@ class QueueWorker:
             hook = self._find_hook(current)
         artists = ", ".join(item.get("name", "") for item in current.get("artists", []))
         print(f"\nNOW PLAYING: {current.get('name')} - {artists}")
-        print(
-            f"  Excerpt  {_clock(hook['start'])} - {_clock(hook['end'])} "
-            f"({hook['method']}, {hook['confidence']} confidence)"
-        )
+        print(f"  Excerpt  {_clock(hook['start'])} - {_clock(hook['end'])}")
         device = playback.get("device") or {}
         device_id = device.get("id")
         if not device_id:
@@ -217,18 +241,10 @@ class QueueWorker:
                 return False
 
     def _find_hook(self, track: dict) -> dict:
-        track_id = track.get("id")
-        try:
-            return detect_hook(
-                self.client.audio_analysis(track_id),
-                excerpt_seconds=self.excerpt_seconds,
-            )
-        except urllib.error.HTTPError as error:
-            if error.code != 403:
-                raise
-            duration = float(track.get("duration_ms", 0)) / 1000
-            # print("  Analysis unavailable (Spotify 403); using the middle excerpt.")
-            return _middle_excerpt(duration, self.excerpt_seconds)
+        # Audio Analysis is unavailable for this app. Avoid a guaranteed 403
+        # and use the deterministic middle excerpt without an API request.
+        duration = float(track.get("duration_ms", 0)) / 1000
+        return _middle_excerpt(duration, self.excerpt_seconds)
 
     def _prepare_next_track(self, playback: dict) -> dict:
         track = playback.get("item") or {}
@@ -264,7 +280,4 @@ def _middle_excerpt(duration: float, excerpt_seconds: float) -> dict:
     return {
         "start": start,
         "end": start + length,
-        "method": "middle_fallback",
-        "confidence": "unavailable",
-        "reason": "Spotify Audio Analysis returned 403",
     }

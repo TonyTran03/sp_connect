@@ -35,7 +35,15 @@ class SongSource(Protocol):
 
     def mark_queued(self, request: SongRequest) -> None: ...
 
+    def accepted_queue_count(self) -> int: ...
+
     def queued_tracks(self) -> list[dict]: ...
+
+    def display_name(self, device_id: str) -> str | None: ...
+
+    def set_display_name(self, device_id: str, display_name: str) -> None: ...
+
+    def playing_attribution(self, spotify_track_id: str) -> dict | None: ...
 
     def delete_owned_queued(self, request_id: int, device_id: str) -> bool: ...
 
@@ -94,6 +102,7 @@ class SQLiteSongSource:
                 "artwork_url": "TEXT",
                 "duration_ms": "INTEGER",
                 "requested_by_device": "TEXT",
+                "requested_by_name": "TEXT",
             }.items():
                 if name not in columns:
                     connection.execute(f"ALTER TABLE song_requests ADD COLUMN {name} {definition}")
@@ -108,7 +117,29 @@ class SQLiteSongSource:
                     album TEXT,
                     artwork_url TEXT,
                     duration_ms INTEGER,
+                    requested_by_device TEXT,
+                    requested_by_name TEXT,
                     played_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            played_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(played_tracks)")
+            }
+            if "requested_by_device" not in played_columns:
+                connection.execute(
+                    "ALTER TABLE played_tracks ADD COLUMN requested_by_device TEXT"
+                )
+            if "requested_by_name" not in played_columns:
+                connection.execute(
+                    "ALTER TABLE played_tracks ADD COLUMN requested_by_name TEXT"
+                )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS device_profiles (
+                    device_id TEXT PRIMARY KEY,
+                    display_name TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
@@ -142,10 +173,11 @@ class SQLiteSongSource:
                 SELECT id
                 FROM song_requests
                 WHERE status = 'pending' AND spotify_track_id = ?
+                  AND requested_by_device = ?
                 ORDER BY id
                 LIMIT 1
                 """,
-                (track["id"],),
+                (track["id"], track.get("requested_by_device")),
             ).fetchone()
             if existing is not None:
                 return int(existing["id"])
@@ -154,13 +186,15 @@ class SQLiteSongSource:
                 """
                 INSERT INTO song_requests (
                     title, artist, spotify_track_id, spotify_uri, album,
-                    artwork_url, duration_ms, requested_by_device
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    artwork_url, duration_ms, requested_by_device,
+                    requested_by_name
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     track["name"], artist, track["id"], track["uri"],
                     track.get("album"), track.get("image_url"), track.get("duration_ms"),
                     track.get("requested_by_device"),
+                    track.get("requested_by_name"),
                 ),
             )
             return int(cursor.lastrowid)
@@ -184,12 +218,14 @@ class SQLiteSongSource:
                 INSERT INTO song_requests (
                     title, artist, status, spotify_track_id, spotify_uri,
                     album, artwork_url, duration_ms, requested_by_device
-                ) VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?)
+                    , requested_by_name
+                ) VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     track["name"], artist, track["id"], track["uri"],
                     track.get("album"), track.get("image_url"), track.get("duration_ms"),
                     track.get("requested_by_device"),
+                    track.get("requested_by_name"),
                 ),
             )
             return int(cursor.lastrowid)
@@ -197,15 +233,31 @@ class SQLiteSongSource:
     def mark_queued(self, request: SongRequest) -> None:
         self._update(request, "queued", spotify_track_id=request.spotify_track_id)
 
+    def accepted_queue_count(self) -> int:
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS count FROM song_requests
+                WHERE status IN ('queued', 'cancelled')
+                """
+            ).fetchone()
+        return int(row["count"])
+
     def queued_tracks(self) -> list[dict]:
         with self._connection() as connection:
             rows = connection.execute(
                 """
-                SELECT id, title, artist, spotify_track_id, spotify_uri, album,
-                       artwork_url, duration_ms, requested_by_device
-                FROM song_requests
-                WHERE status = 'queued'
-                ORDER BY id
+                SELECT requests.id, requests.title, requests.artist,
+                       requests.spotify_track_id, requests.spotify_uri,
+                       requests.album, requests.artwork_url, requests.duration_ms,
+                       requests.requested_by_device, requests.status,
+                       COALESCE(requests.requested_by_name,
+                                profiles.display_name) AS display_name
+                FROM song_requests AS requests
+                LEFT JOIN device_profiles AS profiles
+                  ON profiles.device_id = requests.requested_by_device
+                WHERE requests.status IN ('pending', 'queued')
+                ORDER BY requests.id
                 """
             ).fetchall()
         return [
@@ -216,9 +268,72 @@ class SQLiteSongSource:
                 "album": row["album"], "image_url": row["artwork_url"],
                 "duration_ms": row["duration_ms"],
                 "requested_by_device": row["requested_by_device"],
+                "requested_by_name": row["display_name"],
+                "queue_status": "pending" if row["status"] == "pending" else None,
             }
             for row in rows
         ]
+
+    def display_name(self, device_id: str) -> str | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT display_name FROM device_profiles WHERE device_id = ?",
+                (device_id,),
+            ).fetchone()
+        return str(row["display_name"]) if row is not None else None
+
+    def set_display_name(self, device_id: str, display_name: str) -> None:
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO device_profiles (device_id, display_name)
+                VALUES (?, ?)
+                ON CONFLICT(device_id) DO UPDATE SET
+                    display_name = excluded.display_name,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (device_id, display_name),
+            )
+            connection.execute(
+                """
+                UPDATE song_requests SET requested_by_name = ?
+                WHERE requested_by_device = ?
+                  AND status IN ('pending', 'queued', 'playing')
+                """,
+                (display_name, device_id),
+            )
+            connection.execute(
+                """
+                UPDATE played_tracks SET requested_by_name = ?
+                WHERE requested_by_device = ?
+                """,
+                (display_name, device_id),
+            )
+
+    def playing_attribution(self, spotify_track_id: str) -> dict | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT requests.requested_by_device,
+                       COALESCE(requests.requested_by_name,
+                                profiles.display_name) AS display_name
+                FROM song_requests AS requests
+                LEFT JOIN device_profiles AS profiles
+                  ON profiles.device_id = requests.requested_by_device
+                WHERE requests.spotify_track_id = ?
+                  AND requests.status IN ('playing', 'queued')
+                ORDER BY CASE requests.status WHEN 'playing' THEN 0 ELSE 1 END,
+                         requests.id
+                LIMIT 1
+                """,
+                (spotify_track_id,),
+            ).fetchone()
+        if row is None or not row["requested_by_device"]:
+            return None
+        return {
+            "requested_by_device": row["requested_by_device"],
+            "requested_by_name": row["display_name"],
+        }
 
     def delete_owned_queued(self, request_id: int, device_id: str) -> bool:
         with self._connection() as connection:
@@ -253,8 +368,18 @@ class SQLiteSongSource:
                 """
             ).fetchone()
             if head is not None and head["spotify_track_id"] == spotify_track_id:
-                connection.execute("DELETE FROM song_requests WHERE id = ?", (head["id"],))
-                return str(head["status"])
+                status = str(head["status"])
+                if status == "queued":
+                    # Keep attribution until record_played has written history.
+                    connection.execute(
+                        "UPDATE song_requests SET status = 'playing' WHERE id = ?",
+                        (head["id"],),
+                    )
+                else:
+                    connection.execute(
+                        "DELETE FROM song_requests WHERE id = ?", (head["id"],)
+                    )
+                return status
         return None
 
     def record_played(self, track: dict) -> None:
@@ -262,46 +387,86 @@ class SQLiteSongSource:
         album = track.get("album") or {}
         images = album.get("images") or []
         with self._connection() as connection:
+            attribution = connection.execute(
+                """
+                SELECT id, requested_by_device, requested_by_name
+                FROM song_requests
+                WHERE status = 'playing' AND spotify_track_id = ?
+                ORDER BY id LIMIT 1
+                """,
+                (track.get("id"),),
+            ).fetchone()
             connection.execute(
                 """
                 INSERT INTO played_tracks (
                     spotify_track_id, spotify_uri, title, artist, album,
-                    artwork_url, duration_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    artwork_url, duration_ms, requested_by_device,
+                    requested_by_name
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     track.get("id"), track.get("uri"), track.get("name"), artists,
                     album.get("name"), images[0].get("url") if images else None,
                     track.get("duration_ms"),
+                    attribution["requested_by_device"] if attribution else None,
+                    attribution["requested_by_name"] if attribution else None,
                 ),
             )
+            if attribution is not None:
+                connection.execute(
+                    "DELETE FROM song_requests WHERE id = ?", (attribution["id"],)
+                )
 
     def history(self, limit: int | None = None) -> list[dict]:
         with self._connection() as connection:
             if limit is None:
                 rows = connection.execute(
-                    "SELECT * FROM played_tracks ORDER BY id ASC"
+                    """
+                    SELECT played.*,
+                           COALESCE(played.requested_by_name,
+                                    profiles.display_name) AS display_name
+                    FROM played_tracks AS played
+                    LEFT JOIN device_profiles AS profiles
+                      ON profiles.device_id = played.requested_by_device
+                    ORDER BY played.id ASC
+                    """
                 ).fetchall()
             else:
                 rows = connection.execute(
                     """
                     SELECT * FROM (
-                        SELECT * FROM played_tracks ORDER BY id DESC LIMIT ?
+                        SELECT played.*,
+                               COALESCE(played.requested_by_name,
+                                        profiles.display_name) AS display_name
+                        FROM played_tracks AS played
+                        LEFT JOIN device_profiles AS profiles
+                          ON profiles.device_id = played.requested_by_device
+                        ORDER BY played.id DESC LIMIT ?
                     ) ORDER BY id ASC
                     """,
                     (limit,),
                 ).fetchall()
-        return [dict(row) for row in rows]
+        history = []
+        for row in rows:
+            item = dict(row)
+            item["requested_by_name"] = item.pop("display_name")
+            history.append(item)
+        return history
 
     def pending_tracks(self) -> list[dict]:
         with self._connection() as connection:
             rows = connection.execute(
                 """
-                SELECT title, artist, spotify_track_id, spotify_uri, album,
-                       artwork_url, duration_ms, requested_by_device
-                FROM song_requests
-                WHERE status = 'pending'
-                ORDER BY id
+                SELECT requests.title, requests.artist, requests.spotify_track_id,
+                       requests.spotify_uri, requests.album, requests.artwork_url,
+                       requests.duration_ms, requests.requested_by_device,
+                       COALESCE(requests.requested_by_name,
+                                profiles.display_name) AS display_name
+                FROM song_requests AS requests
+                LEFT JOIN device_profiles AS profiles
+                  ON profiles.device_id = requests.requested_by_device
+                WHERE requests.status = 'pending'
+                ORDER BY requests.id
                 """
             ).fetchall()
         return [
@@ -314,6 +479,7 @@ class SQLiteSongSource:
                 "image_url": row["artwork_url"],
                 "duration_ms": row["duration_ms"],
                 "requested_by_device": row["requested_by_device"],
+                "requested_by_name": row["display_name"],
                 "queue_status": "pending",
             }
             for row in rows

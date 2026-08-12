@@ -2,12 +2,17 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Better Jam</title><link rel="stylesheet" href="./styles.css"><link rel="stylesheet" href="./scroll.css"><link rel="stylesheet" href="./mobile.css"><script src="./site-settings.js?v=1" defer></script><script src="./app.js?v=7" defer></script>
+  <title>Better Jam</title><link rel="stylesheet" href="./styles.css"><link rel="stylesheet" href="./scroll.css"><link rel="stylesheet" href="./mobile.css"><script src="./site-settings.js?v=1" defer></script><script src="./app.js?v=11" defer></script>
 </head>
 <body>
   <main class="app">
     <header class="topbar">
       <button id="playlistToggle" class="playlist-toggle" type="button" aria-controls="playlistPanel" aria-expanded="false">View playlist</button>
+      <div class="identity-wrap">
+        <label for="displayName">Queued as</label>
+        <input id="displayName" maxlength="24" autocomplete="nickname" placeholder="Guest name">
+        <button id="saveName" type="button">Save</button>
+      </div>
       <div class="search-wrap">
         <svg viewBox="0 0 24 24"><path d="m21 21-4.4-4.4m2.4-5.1a7.5 7.5 0 1 1-15 0 7.5 7.5 0 0 1 15 0Z"/></svg>
         <input id="search" type="search" autocomplete="off" placeholder="What do you want to play?">

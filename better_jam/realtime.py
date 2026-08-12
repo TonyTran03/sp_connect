@@ -122,6 +122,11 @@ class WebSocketHub:
         """Broadcast database changes immediately without waiting on Spotify."""
         if current is None and self.latest_state is not None:
             current = self.latest_state.get("current")
+        if current and current.get("id"):
+            current = dict(current)
+            attribution = self.source.playing_attribution(current["id"])
+            if attribution:
+                current.update(attribution)
         state = {
             "type": "state",
             "current": current,
@@ -168,7 +173,13 @@ class WebSocketHub:
         ).decode()
         device_id, session_token, is_new = self.sessions.resolve(headers.get("cookie"))
         cookie_header = (
-            f"Set-Cookie: {self.sessions.set_cookie_header(session_token)}\r\n"
+            "Set-Cookie: "
+            + self.sessions.set_cookie_header(
+                session_token,
+                secure=headers.get("x-forwarded-proto", "")
+                .split(",", 1)[0].strip().lower() == "https",
+            )
+            + "\r\n"
             if is_new else ""
         )
         connection.sendall(

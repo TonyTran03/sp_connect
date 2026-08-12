@@ -39,6 +39,7 @@ def main() -> None:
         volume_interval_seconds=SETTINGS.volume_interval_seconds,
         fade_in_target_volume=SETTINGS.fade_in_target_volume,
         restore_original_volume=SETTINGS.restore_original_volume,
+        queue_ahead=SETTINGS.spotify_queue_ahead,
     )
     stop_event = threading.Event()
     realtime = WebSocketHub(

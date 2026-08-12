@@ -30,7 +30,10 @@ def create_server(
 ) -> ThreadingHTTPServer:
     search_cache: dict[str, tuple[float, list[dict]]] = {}
     search_cache_lock = threading.Lock()
-    search_cache_seconds = 300
+    search_inflight: dict[str, threading.Event] = {}
+    # Track metadata changes rarely, so popular party searches can safely avoid
+    # another Spotify request for the duration of an event.
+    search_cache_seconds = 3_600
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
@@ -54,6 +57,7 @@ def create_server(
                         # autoplay items are intentionally excluded.
                         "queue": queue,
                         "device_id": device_id,
+                        "display_name": source.display_name(device_id) or "",
                     }
                 )
                 return
@@ -90,6 +94,29 @@ def create_server(
             print(f"Removed queue request {request_id} by device {device_id}")
             self._json({"ok": True, "request_id": request_id})
 
+        def do_PUT(self) -> None:  # noqa: N802
+            parsed = urllib.parse.urlparse(self.path)
+            if parsed.path != "/api/profile":
+                self.send_error(404)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if length <= 0 or length > 1_000:
+                    raise ValueError("Invalid request size")
+                body = json.loads(self.rfile.read(length))
+                display_name = " ".join(str(body.get("display_name", "")).split())
+                if not 1 <= len(display_name) <= 24:
+                    raise ValueError("Name must be between 1 and 24 characters")
+                if not display_name.isprintable():
+                    raise ValueError("Name contains unsupported characters")
+                device_id = self._device_id()
+                source.set_display_name(device_id, display_name)
+                if on_queue_change:
+                    on_queue_change()
+                self._json({"ok": True, "display_name": display_name})
+            except (ValueError, json.JSONDecodeError) as error:
+                self._json({"error": str(error)}, status=400)
+
         def do_POST(self) -> None:  # noqa: N802
             parsed = urllib.parse.urlparse(self.path)
             if parsed.path != "/api/queue":
@@ -105,34 +132,30 @@ def create_server(
                     raise ValueError("Missing track metadata")
                 device_id = self._device_id()
                 track["requested_by_device"] = device_id
-                try:
-                    # A success response now means Spotify itself accepted the
-                    # track, rather than merely saving a database request.
-                    client.add_to_queue(track["uri"])
-                    source.delete_pending_track(track["id"])
-                    source.record_queued(track)
-                    if on_queue_change:
-                        on_queue_change()
-                    print(f"Queued by device {device_id}: {track['name']}")
-                    self._json(
-                        {"ok": True, "queued": True, "device_id": device_id},
-                        status=201,
-                    )
-                except (urllib.error.HTTPError, OSError) as spotify_error:
-                    # Preserve one request for the background worker to retry.
-                    request_id = source.enqueue(track)
-                    if on_queue_change:
-                        on_queue_change()
-                    self._json(
-                        {
-                            "ok": True,
-                            "queued": False,
-                            "request_id": request_id,
-                            "message": "Saved as pending; Spotify will retry it",
-                            "device_id": device_id,
-                        },
-                        status=202,
-                    )
+                submitted_name = " ".join(
+                    str(track.get("requested_by_name", "")).split()
+                )
+                if 1 <= len(submitted_name) <= 24 and submitted_name.isprintable():
+                    track["requested_by_name"] = submitted_name
+                    source.set_display_name(device_id, submitted_name)
+                else:
+                    track["requested_by_name"] = source.display_name(device_id)
+                # Accept instantly into Better Jam. The worker submits at most
+                # one request per poll and keeps only a small Spotify buffer.
+                request_id = source.enqueue(track)
+                if on_queue_change:
+                    on_queue_change()
+                print(f"Requested by device {device_id}: {track['name']}")
+                self._json(
+                    {
+                        "ok": True,
+                        "queued": True,
+                        "request_id": request_id,
+                        "message": f"{track['name']} added to Next up",
+                        "device_id": device_id,
+                    },
+                    status=201,
+                )
             except (ValueError, json.JSONDecodeError) as error:
                 self._json({"error": str(error)}, status=400)
 
@@ -147,10 +170,27 @@ def create_server(
             if cached and time.monotonic() - cached[0] < search_cache_seconds:
                 self._json({"tracks": cached[1]})
                 return
+            with search_cache_lock:
+                search_finished = search_inflight.get(cache_key)
+                owns_search = search_finished is None
+                if owns_search:
+                    search_finished = threading.Event()
+                    search_inflight[cache_key] = search_finished
+            if not owns_search:
+                # If several guests search for the same song at once, only the
+                # first request reaches Spotify. The others reuse its result.
+                search_finished.wait(20)
+                with search_cache_lock:
+                    cached = search_cache.get(cache_key)
+                if cached and time.monotonic() - cached[0] < search_cache_seconds:
+                    self._json({"tracks": cached[1]})
+                else:
+                    self._json({"error": "Search temporarily unavailable"}, status=503)
+                return
             try:
                 tracks = [track_info(item) for item in client.search(query, limit=10)]
                 with search_cache_lock:
-                    if len(search_cache) >= 500:
+                    if len(search_cache) >= 2_000:
                         oldest = min(search_cache, key=lambda key: search_cache[key][0])
                         search_cache.pop(oldest, None)
                     search_cache[cache_key] = (time.monotonic(), tracks)
@@ -170,6 +210,11 @@ def create_server(
                 )
             except OSError as error:
                 self._json({"error": f"Spotify search failed: {error}"}, status=502)
+            finally:
+                with search_cache_lock:
+                    finished = search_inflight.pop(cache_key, None)
+                    if finished:
+                        finished.set()
 
         def _static(self, path: str) -> None:
             relative = "index.html" if path == "/" else path.lstrip("/")
@@ -220,6 +265,7 @@ def create_server(
                     "GET /api/search?",
                     "POST /api/queue ",
                     "DELETE /api/queue/",
+                    "PUT /api/profile ",
                 )
             ):
                 return
@@ -234,6 +280,10 @@ def create_server(
         def _send_session_cookie(self) -> None:
             token = getattr(self, "_new_session_token", None)
             if token:
-                self.send_header("Set-Cookie", sessions.set_cookie_header(token))
+                forwarded_proto = self.headers.get("X-Forwarded-Proto", "")
+                is_https = forwarded_proto.split(",", 1)[0].strip().lower() == "https"
+                self.send_header(
+                    "Set-Cookie", sessions.set_cookie_header(token, secure=is_https)
+                )
 
     return ThreadingHTTPServer((host, port), Handler)
