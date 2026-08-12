@@ -96,7 +96,7 @@ def _authorize(app_client_id: str) -> dict:
     )
 
 
-def get_access_token(app_client_id: str) -> str:
+def get_access_token(app_client_id: str, force_refresh: bool = False) -> str:
     token: dict = {}
     if TOKEN_FILE.exists():
         try:
@@ -108,7 +108,11 @@ def get_access_token(app_client_id: str) -> str:
         token = {}
     if not set(SCOPES.split()).issubset(set(token.get("scope", "").split())):
         token = {}
-    if token.get("access_token") and token.get("expires_at", 0) > time.time() + 30:
+    if (
+        not force_refresh
+        and token.get("access_token")
+        and token.get("expires_at", 0) > time.time() + 30
+    ):
         return token["access_token"]
     if token.get("refresh_token"):
         try:

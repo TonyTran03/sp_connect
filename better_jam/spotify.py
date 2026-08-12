@@ -6,6 +6,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 
 
 API_ROOT = "https://api.spotify.com/v1"
@@ -22,8 +23,13 @@ def rate_limit_message(error: urllib.error.HTTPError) -> str:
 
 
 class SpotifyClient:
-    def __init__(self, access_token: str) -> None:
+    def __init__(
+        self,
+        access_token: str,
+        refresh_access_token: Callable[[], str] | None = None,
+    ) -> None:
         self.access_token = access_token
+        self._refresh_access_token = refresh_access_token
         self._request_lock = threading.Lock()
         self._rate_limited_until = 0.0
         self._playback_lock = threading.Lock()
@@ -34,43 +40,54 @@ class SpotifyClient:
         url = f"{API_ROOT}{path}"
         if query:
             url += "?" + urllib.parse.urlencode(query)
-        request = urllib.request.Request(
-            url,
-            method=method,
-            headers={"Authorization": f"Bearer {self.access_token}"},
-        )
         with self._request_lock:
             delay = self._rate_limited_until - time.monotonic()
             if delay > 0:
                 time.sleep(delay)
-            try:
-                with urllib.request.urlopen(request, timeout=20) as response:
-                    body = response.read()
-                    if not body.strip():
-                        return None
-                    content_type = response.headers.get_content_type()
-                    if content_type != "application/json":
-                        # Player control endpoints can return a successful response
-                        # with a non-JSON body. There is nothing useful to parse.
-                        return None
-                    return json.loads(body)
-            except urllib.error.HTTPError as error:
-                if error.code == 429:
-                    try:
-                        retry_after = max(1, int(error.headers.get("Retry-After", "5")))
-                    except (TypeError, ValueError):
-                        retry_after = 5
-                    detail = error.read().decode(errors="replace")
-                    reason = None
-                    try:
-                        reason = (json.loads(detail).get("error") or {}).get("reason")
-                    except (json.JSONDecodeError, AttributeError):
-                        pass
-                    error.spotify_retry_after = retry_after
-                    error.spotify_rate_limit_reason = reason
-                    error.spotify_error_detail = detail
-                    self._rate_limited_until = time.monotonic() + retry_after
-                raise
+            for attempt in range(2):
+                request = urllib.request.Request(
+                    url,
+                    method=method,
+                    headers={"Authorization": f"Bearer {self.access_token}"},
+                )
+                try:
+                    with urllib.request.urlopen(request, timeout=20) as response:
+                        body = response.read()
+                        if not body.strip():
+                            return None
+                        content_type = response.headers.get_content_type()
+                        if content_type != "application/json":
+                            # Player control endpoints can return a successful response
+                            # with a non-JSON body. There is nothing useful to parse.
+                            return None
+                        return json.loads(body)
+                except urllib.error.HTTPError as error:
+                    if (
+                        error.code == 401
+                        and attempt == 0
+                        and self._refresh_access_token is not None
+                    ):
+                        error.close()
+                        self.access_token = self._refresh_access_token()
+                        self._playback_cached_at = 0.0
+                        print("Spotify access token refreshed; retrying request.")
+                        continue
+                    if error.code == 429:
+                        try:
+                            retry_after = max(1, int(error.headers.get("Retry-After", "5")))
+                        except (TypeError, ValueError):
+                            retry_after = 5
+                        detail = error.read().decode(errors="replace")
+                        reason = None
+                        try:
+                            reason = (json.loads(detail).get("error") or {}).get("reason")
+                        except (json.JSONDecodeError, AttributeError):
+                            pass
+                        error.spotify_retry_after = retry_after
+                        error.spotify_rate_limit_reason = reason
+                        error.spotify_error_detail = detail
+                        self._rate_limited_until = time.monotonic() + retry_after
+                    raise
 
     def queue(self) -> dict:
         return self._request("GET", "/me/player/queue") or {}

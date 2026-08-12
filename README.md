@@ -11,6 +11,16 @@ Set `SPOTIFY_CLIENT_ID` in `.env`, register
 on a Spotify device, then run `main.py` from an IDE or as a background process.
 No command-line arguments are required.
 
+To prevent whoever queued the current song from adding more songs for five
+minutes, run this in another terminal:
+
+```powershell
+python ban_current_queuer.py
+```
+
+Use `--minutes 10` to choose a different duration. The ban is local and makes no
+Spotify API calls.
+
 The website uses port `8787`; live WebSocket updates use port `8788`. Allow both
 ports through the host firewall for phones on the same Wi-Fi. Each browser keeps
 a persistent device ID in local storage so later queue ownership/removal can be

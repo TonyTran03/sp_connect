@@ -15,7 +15,13 @@ from better_jam.sessions import DeviceSessions
  
 
 def main() -> None:
-    spotify = SpotifyClient(get_access_token(client_id()))
+    app_client_id = client_id()
+    spotify = SpotifyClient(
+        get_access_token(app_client_id),
+        refresh_access_token=lambda: get_access_token(
+            app_client_id, force_refresh=True
+        ),
+    )
     songs = SQLiteSongSource(PROJECT_ROOT / "queue.db")
     public_url = string_setting("PUBLIC_URL")
     websocket_public_url = string_setting("PUBLIC_WEBSOCKET_URL")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,6 +45,10 @@ class SongSource(Protocol):
     def set_display_name(self, device_id: str, display_name: str) -> None: ...
 
     def playing_attribution(self, spotify_track_id: str) -> dict | None: ...
+
+    def ban_current_queuer(self, seconds: int = 300) -> dict | None: ...
+
+    def ban_remaining_seconds(self, device_id: str) -> int: ...
 
     def delete_owned_queued(self, request_id: int, device_id: str) -> bool: ...
 
@@ -139,6 +144,16 @@ class SQLiteSongSource:
                 CREATE TABLE IF NOT EXISTS device_profiles (
                     device_id TEXT PRIMARY KEY,
                     display_name TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS device_bans (
+                    device_id TEXT PRIMARY KEY,
+                    banned_until INTEGER NOT NULL,
+                    reason TEXT,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
                 """
@@ -334,6 +349,64 @@ class SQLiteSongSource:
             "requested_by_device": row["requested_by_device"],
             "requested_by_name": row["display_name"],
         }
+
+    def ban_current_queuer(self, seconds: int = 300) -> dict | None:
+        seconds = max(1, int(seconds))
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT requests.title, requests.requested_by_device,
+                       COALESCE(requests.requested_by_name,
+                                profiles.display_name) AS display_name
+                FROM song_requests AS requests
+                LEFT JOIN device_profiles AS profiles
+                  ON profiles.device_id = requests.requested_by_device
+                WHERE requests.status = 'playing'
+                  AND requests.requested_by_device IS NOT NULL
+                ORDER BY requests.id DESC LIMIT 1
+                """
+            ).fetchone()
+            if row is None:
+                return None
+            banned_until = int(time.time()) + seconds
+            connection.execute(
+                """
+                INSERT INTO device_bans (device_id, banned_until, reason)
+                VALUES (?, ?, ?)
+                ON CONFLICT(device_id) DO UPDATE SET
+                    banned_until = excluded.banned_until,
+                    reason = excluded.reason,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    row["requested_by_device"],
+                    banned_until,
+                    f"Queued current song: {row['title']}",
+                ),
+            )
+        return {
+            "device_id": row["requested_by_device"],
+            "display_name": row["display_name"],
+            "track": row["title"],
+            "banned_until": banned_until,
+        }
+
+    def ban_remaining_seconds(self, device_id: str) -> int:
+        now = int(time.time())
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT banned_until FROM device_bans WHERE device_id = ?",
+                (device_id,),
+            ).fetchone()
+            if row is None:
+                return 0
+            remaining = int(row["banned_until"]) - now
+            if remaining <= 0:
+                connection.execute(
+                    "DELETE FROM device_bans WHERE device_id = ?", (device_id,)
+                )
+                return 0
+        return remaining
 
     def delete_owned_queued(self, request_id: int, device_id: str) -> bool:
         with self._connection() as connection:

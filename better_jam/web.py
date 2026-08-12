@@ -131,6 +131,17 @@ def create_server(
                 if not all(track.get(field) for field in required):
                     raise ValueError("Missing track metadata")
                 device_id = self._device_id()
+                ban_remaining = source.ban_remaining_seconds(device_id)
+                if ban_remaining > 0:
+                    minutes, seconds = divmod(ban_remaining, 60)
+                    wait = (
+                        f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
+                    )
+                    self._json(
+                        {"error": f"Queue cooldown active. Try again in {wait}."},
+                        status=403,
+                    )
+                    return
                 track["requested_by_device"] = device_id
                 submitted_name = " ".join(
                     str(track.get("requested_by_name", "")).split()
