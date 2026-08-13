@@ -4,3 +4,5 @@ queue.db
 __pycache__/
 
 *.jpg
+
+.env

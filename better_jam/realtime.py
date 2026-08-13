@@ -132,6 +132,7 @@ class WebSocketHub:
             "current": current,
             "queue": self.source.queued_tracks(),
             "history": self.source.history(),
+            "announcement": self.source.latest_announcement(),
         }
         serialized = json.dumps(state, sort_keys=True, ensure_ascii=False)
         if serialized != self.latest_serialized:
