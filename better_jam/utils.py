@@ -17,8 +17,8 @@ class JamSettings:
 
     fade_out_seconds: float = 2
     fade_in_seconds: float = 2
-    # Ten eased steps over each two-second fade for a smoother transition.
-    volume_interval_seconds: float = 0.2
+    # Four eased steps over each two-second fade to limit Spotify volume calls.
+    volume_interval_seconds: float = 0.5
 
     # None means return to the volume Spotify reported before the fade began.
     # Set this to a number from 0 to 100 to always fade back to a fixed volume.
