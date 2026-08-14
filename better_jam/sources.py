@@ -50,6 +50,8 @@ class SongSource(Protocol):
 
     def ban_remaining_seconds(self, device_id: str) -> int: ...
 
+    def latest_announcement(self) -> dict | None: ...
+
     def delete_owned_queued(self, request_id: int, device_id: str) -> bool: ...
 
     def finish_head_if_playing(self, spotify_track_id: str) -> str | None: ...
@@ -155,6 +157,16 @@ class SQLiteSongSource:
                     banned_until INTEGER NOT NULL,
                     reason TEXT,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS announcements (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    message TEXT NOT NULL,
+                    expires_at INTEGER NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
@@ -384,6 +396,14 @@ class SQLiteSongSource:
                     f"Queued current song: {row['title']}",
                 ),
             )
+            display_name = row["display_name"] or "Guest"
+            connection.execute(
+                "INSERT INTO announcements (message, expires_at) VALUES (?, ?)",
+                (
+                    f"{display_name} was banned from queueing for {seconds // 60 or 1} minute(s)",
+                    int(time.time()) + 8,
+                ),
+            )
         return {
             "device_id": row["requested_by_device"],
             "display_name": row["display_name"],
@@ -407,6 +427,19 @@ class SQLiteSongSource:
                 )
                 return 0
         return remaining
+
+    def latest_announcement(self) -> dict | None:
+        now = int(time.time())
+        with self._connection() as connection:
+            connection.execute("DELETE FROM announcements WHERE expires_at <= ?", (now,))
+            row = connection.execute(
+                """
+                SELECT id, message, expires_at FROM announcements
+                WHERE expires_at > ? ORDER BY id DESC LIMIT 1
+                """,
+                (now,),
+            ).fetchone()
+        return dict(row) if row is not None else None
 
     def delete_owned_queued(self, request_id: int, device_id: str) -> bool:
         with self._connection() as connection:
