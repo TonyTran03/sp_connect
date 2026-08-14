@@ -7,7 +7,10 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 TOKEN_FILE = PROJECT_ROOT / ".spotify_token.json"
 REDIRECT_URI = "http://127.0.0.1:8888/callback"
-SCOPES = "user-read-playback-state user-modify-playback-state"
+SCOPES = (
+    "user-read-playback-state user-modify-playback-state "
+    "playlist-modify-private"
+)
 
 
 def load_env() -> None:
